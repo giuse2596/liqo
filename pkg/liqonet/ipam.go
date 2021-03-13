@@ -2,108 +2,202 @@ package liqonet
 
 import (
 	"fmt"
-	"github.com/apparentlymart/go-cidr/cidr"
+	goipam "github.com/davidefalcone1/go-ipam"
+	"inet.af/netaddr"
 	"k8s.io/klog"
-	"net"
+	"strconv"
+	"strings"
 )
 
 type Ipam interface {
-	Init() error
-	GetNewSubnetPerCluster(network *net.IPNet, clusterID string) (*net.IPNet, error)
-	RemoveReservedSubnet(clusterID string)
+	Init(reservedNetworks, networkPool []string) error
+	GetSubnetPerCluster(network, clusterID string) (string, error)
+	FreeSubnetPerCluster(clusterID string) error
+	AcquireReservedSubnet(network string) error
+	FreeReservedSubnet(network string) error
 }
 
-type IpManager struct {
-	UsedSubnets        map[string]*net.IPNet
-	FreeSubnets        map[string]*net.IPNet
-	ConflictingSubnets map[string]*net.IPNet
-	SubnetPerCluster   map[string]*net.IPNet
+type IPAM struct {
+	/* Map that store the network allocated for a given remote cluster */
+	SubnetPerCluster map[string]string
+	/* Set of networks from which IPAM takes new networks. */
+	pools []string
+	ipam  goipam.Ipamer
 }
 
-func (ip IpManager) Init() error {
-	//TODO: remove the hardcoded value of the CIDRBlock
-	CIDRBlock := "10.0.0.0/16"
-	//the first /16 subnet in 10/8 cidr block
-	_, subnet, err := net.ParseCIDR("10.0.0.0/16")
-	if err != nil {
-		klog.Errorf("unable to parse the first subnet %s: %s", CIDRBlock, err)
-		return err
+func NewIPAM() *IPAM {
+	liqoIPAM := IPAM{
+		SubnetPerCluster: make(map[string]string),
+		pools:            make([]string, 0),
+		ipam:             goipam.New(),
 	}
-	//The first subnet /16 is added to the FreeSubnets
-	ip.FreeSubnets[subnet.String()] = subnet
-	//here we divide the CIDRBlock 10.0.0.0/8 in 256 /16 subnets
-	for i := 0; i < 255; i++ {
-		subnet, _ = cidr.NextSubnet(subnet, 16)
-		ip.FreeSubnets[subnet.String()] = subnet
+	return &liqoIPAM
+}
+
+var Pools = []string{
+	"10.0.0.0/8",
+	"192.168.0.0/16",
+	"172.16.0.0/12",
+}
+
+/* Init receives a set of networks that will be marked as used, and a slice of pools from which it will allocate subnets for remote clusters */
+func (liqoIPAM *IPAM) Init(reservedNetworks, networkPool []string) error {
+
+	/* Set network pools */
+	for _, network := range networkPool {
+		if _, err := liqoIPAM.ipam.NewPrefix(network); err != nil {
+			return fmt.Errorf("failed to create a new prefix for network %s", network)
+		}
+		liqoIPAM.pools = append(liqoIPAM.pools, network)
+	}
+	/* Acquire reserved networks */
+	for _, network := range reservedNetworks {
+		if err := liqoIPAM.AcquireReservedSubnet(network); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-//for a given cluster it returns an error if no subnets are available
-//a new subnet if the original pod Cidr of the cluster has conflicts
-//the existing subnet allocated to the cluster if already called this function
-//original network if no conflicts are present.
-func (ip IpManager) GetNewSubnetPerCluster(network *net.IPNet, clusterID string) (*net.IPNet, error) {
-	//first check if we already have assigned a subnet to the cluster
-	if _, ok := ip.SubnetPerCluster[clusterID]; ok {
-		return ip.SubnetPerCluster[clusterID], nil
+/* AcquireReservedNetwork marks as used the network received as parameter */
+func (liqoIPAM *IPAM) AcquireReservedSubnet(reservedNetwork string) error {
+	klog.Infof("Trying to acquire reserved network %s from one pool", reservedNetwork)
+	pool, ok, err := liqoIPAM.getPoolFromNetwork(reservedNetwork)
+	if err != nil {
+		return err
 	}
-	//check if the given network has conflicts with any of the used subnets
-	if flag := VerifyNoOverlap(ip.UsedSubnets, network); flag {
-		//if there are conflicts then get a free subnet from the pool and return it
-		//return also a "true" value for the bool
-		if subnet, err := ip.getNextSubnet(); err != nil {
-			return nil, err
-		} else {
-			ip.reserveSubnet(subnet, clusterID)
-			klog.Infof("%s -> NAT enabled, remapping original subnet %s to new subnet %s", clusterID, network.String(), subnet.String())
-			return subnet, nil
+	if ok {
+		klog.Infof("Network %s is contained in pool %s", reservedNetwork, pool)
+		if _, err := liqoIPAM.ipam.AcquireSpecificChildPrefix(pool, reservedNetwork); err != nil {
+			klog.Infof("Network %s has already been reserved", reservedNetwork)
+			return nil
+		}
+		klog.Infof("Network %s has just been reserved.", reservedNetwork)
+		return nil
+	}
+	klog.Infof("Network %s is not contained in any pool", reservedNetwork)
+	if _, err := liqoIPAM.ipam.NewPrefix(reservedNetwork); err != nil {
+		klog.Infof("Network %s has already been reserved", reservedNetwork)
+		return nil
+	}
+	klog.Infof("Network %s has just been reserved.", reservedNetwork)
+	return nil
+}
+
+/* Function that receives a network as parameter and returns the pool to which this network belongs to. The second return parameter is a boolean: it is false if the network does not belong to any pool */
+func (liqoIPAM *IPAM) getPoolFromNetwork(network string) (string, bool, error) {
+	var poolIPset netaddr.IPSetBuilder
+	// Build IPSet for new network
+	ipprefix, err := netaddr.ParseIPPrefix(network)
+	if err != nil {
+		return "", false, err
+	}
+	for _, pool := range liqoIPAM.pools {
+		// Build IPSet for pool
+		c, err := netaddr.ParseIPPrefix(pool)
+		if err != nil {
+			return "", false, err
+		}
+		poolIPset.AddPrefix(c)
+		// Check if the pool contains network
+		if poolIPset.IPSet().ContainsPrefix(ipprefix) {
+			return pool, true, nil
 		}
 	}
-	ip.reserveSubnet(network, clusterID)
-	klog.Infof("%s -> NAT not needed, using original subnet %s", clusterID, network.String())
-
-	return network, nil
+	return "", false, nil
 }
 
-func (ip *IpManager) getNextSubnet() (*net.IPNet, error) {
-	if len(ip.FreeSubnets) == 0 {
-		return nil, fmt.Errorf("no more available subnets to allocate")
+/* GetSubnetPerCluster tries to reserve the network received as parameter for cluster clusterID. If it cannot allocate the network itself, GetSubnetPerCluster maps it to a new network. The network returned can be the original network, or the mapped network */
+func (liqoIPAM *IPAM) GetSubnetPerCluster(network, clusterID string) (string, error) {
+	var mappedNetwork string
+	if value, ok := liqoIPAM.SubnetPerCluster[clusterID]; ok {
+		return value, nil
 	}
-	var availableSubnet *net.IPNet
-	for _, subnet := range ip.FreeSubnets {
-		availableSubnet = subnet
-		break
+	klog.Infof("Network %s allocation request for cluster %s", network, clusterID)
+	_, err := liqoIPAM.ipam.NewPrefix(network)
+	if err != nil && !strings.Contains(err.Error(), "overlaps") {
+		/* Overlapping is not considered an error in this context. */
+		return "", fmt.Errorf("Cannot reserve network %s:%w", network, err)
 	}
-	return availableSubnet, nil
-}
-
-//add the network to the UsedSubnets and remove the subnets in free subnets that overlap with the network
-func (ip IpManager) reserveSubnet(network *net.IPNet, clusterID string) {
-	ip.UsedSubnets[network.String()] = network
-	for _, net := range ip.FreeSubnets {
-		if bool := VerifyNoOverlap(ip.UsedSubnets, net); bool {
-			ip.ConflictingSubnets[net.String()] = net
-			delete(ip.FreeSubnets, net.String())
+	if err == nil {
+		klog.Infof("Network %s successfully assigned for cluster %s", network, clusterID)
+		liqoIPAM.SubnetPerCluster[clusterID] = network
+		return network, nil
+	}
+	/* Since NewPrefix failed, network belongs to a pool or it has been already reserved */
+	klog.Infof("Cannot allocate network %s, checking if it belongs to any pool...", network)
+	pool, ok, err := liqoIPAM.getPoolFromNetwork(network)
+	if ok {
+		klog.Infof("Network %s belongs to pool %s, trying to acquire it...", network, pool)
+		_, err := liqoIPAM.ipam.AcquireSpecificChildPrefix(pool, network)
+		if err != nil && !strings.Contains(err.Error(), "is not available") {
+			/* Uknown error, return */
+			return "", fmt.Errorf("cannot acquire prefix %s from prefix %s: %w", network, pool, err)
 		}
+		if err == nil {
+			klog.Infof("Network %s successfully assigned to cluster %s", network, clusterID)
+			liqoIPAM.SubnetPerCluster[clusterID] = network
+			return network, nil
+		}
+		/* Network is not available, need a mapping */
+		klog.Infof("Cannot acquire network %s from pool %s", network, pool)
 	}
-	//add the very same subnet to the
-	ip.SubnetPerCluster[clusterID] = network
-}
-
-func (ip IpManager) RemoveReservedSubnet(clusterID string) {
-	subnet, ok := ip.SubnetPerCluster[clusterID]
+	/* Network is already reserved, need a mapping */
+	klog.Infof("Looking for a mapping for network %s...", network)
+	mappedNetwork, ok = liqoIPAM.mapNetwork(network)
 	if !ok {
-		return
+		return "", fmt.Errorf("Cannot assign any network to cluster %s", clusterID)
 	}
-	//remove the subnet from the used ones
-	delete(ip.UsedSubnets, subnet.String())
-	delete(ip.SubnetPerCluster, clusterID)
-	//check if there are subnets in the conflicting map that can be made available in to the free pool
-	for _, net := range ip.ConflictingSubnets {
-		if overlap := VerifyNoOverlap(ip.UsedSubnets, net); !overlap {
-			delete(ip.ConflictingSubnets, net.String())
-			ip.FreeSubnets[net.String()] = net
+	klog.Infof("Network %s successfully mapped to network %s", network, mappedNetwork)
+	klog.Infof("Network %s successfully assigned to cluster %s", network, clusterID)
+	liqoIPAM.SubnetPerCluster[clusterID] = mappedNetwork
+	return mappedNetwork, nil
+}
+
+func (liqoIPAM *IPAM) mapNetwork(network string) (string, bool) {
+	for _, pool := range liqoIPAM.pools {
+		klog.Infof("Trying to acquire a child prefix from prefix %s (mask lenght=%d)", pool, getMask(network))
+		if mappedNetwork, err := liqoIPAM.ipam.AcquireChildPrefix(pool, getMask(network)); err == nil {
+			klog.Infof("network %s has been mapped to network %s", network, mappedNetwork)
+			return mappedNetwork.String(), true
 		}
 	}
+	return "", false
+}
+
+/* Helper function to get a mask from a net.IPNet */
+func getMask(network string) uint8 {
+	stringMask := network[len(network)-2:]
+	mask, _ := strconv.ParseInt(stringMask, 10, 8)
+	return uint8(mask)
+}
+
+/* FreeReservedSubnet marks as free a reserved subnet */
+func (liqoIPAM *IPAM) FreeReservedSubnet(network string) error {
+	if p := liqoIPAM.ipam.PrefixFrom(network); p == nil {
+		return fmt.Errorf("network %s is already available", network)
+	} else {
+		//Network exists
+		if err := liqoIPAM.ipam.ReleaseChildPrefix(liqoIPAM.ipam.PrefixFrom(network)); err != nil {
+			klog.Infof("Cannot release subnet %s previously allocated from the pools", liqoIPAM.ipam.PrefixFrom(network))
+			if _, err := liqoIPAM.ipam.DeletePrefix(network); err != nil {
+				klog.Errorf("Cannot delete prefix %s", network)
+				return fmt.Errorf("cannot remove subnet %s", network)
+			}
+		}
+	}
+	return nil
+}
+
+/* FreeSubnetPerCluster marks as free the network previously allocated for cluster clusterID */
+func (liqoIPAM *IPAM) FreeSubnetPerCluster(clusterID string) error {
+	if _, ok := liqoIPAM.SubnetPerCluster[clusterID]; !ok {
+		//Network does not exists
+		return nil
+	}
+	if err := liqoIPAM.FreeReservedSubnet(liqoIPAM.SubnetPerCluster[clusterID]); err != nil {
+		return err
+	}
+	delete(liqoIPAM.SubnetPerCluster, clusterID)
+	return nil
 }

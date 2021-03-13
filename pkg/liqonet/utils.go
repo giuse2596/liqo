@@ -4,18 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
+	"net"
+	"os"
+	"syscall"
+
 	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/liqotech/liqo/internal/utils/errdefs"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/tools/go/ssa/interp/testdata/src/errors"
-	"io/ioutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
-	"net"
-	"os"
-	"syscall"
 )
 
 var (
@@ -168,4 +169,10 @@ func DeleteIFaceByIndex(ifaceIndex int) error {
 		return err
 	}
 	return err
+}
+
+/* Helper function to obtain a net.IPNet starting from a string */
+func GetNetworkFromString(networkString string) *net.IPNet {
+	_, network, _ := net.ParseCIDR(networkString)
+	return network
 }
