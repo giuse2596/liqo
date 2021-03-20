@@ -104,51 +104,61 @@ func (tec *TunnelEndpointCreator) GetClustersSubnets() (map[string]string, error
 	return subnets, nil
 }
 
-func (tec *TunnelEndpointCreator) InitConfiguration(reservedSubnets, clusterSubnets map[string]string) error {
+func (tec *TunnelEndpointCreator) InitConfiguration(reservedSubnets map[string]string, clusterSubnets map[string]string) error {
 	//here we acquire the lock of the mutex
 	tec.Mutex.Lock()
 	defer tec.Mutex.Unlock()
-	// Reserved networks will be marked as used by ipam
-	reserved := make([]string, 0)
-	for _, network := range reservedSubnets {
-		reserved = append(reserved, network)
-	}
-	for _, network := range clusterSubnets {
-		reserved = append(reserved, network)
-	}
-	if err := tec.IPManager.Init(reserved, liqonetOperator.Pools); err != nil {
+	if err := tec.IPManager.Init(reservedSubnets, liqonetOperator.Pools, clusterSubnets); err != nil {
 		klog.Errorf("an error occurred while initializing the IP manager -> err")
 		return err
 	}
-
 	tec.ReservedSubnets = reservedSubnets
 	return nil
 }
 
 func (tec *TunnelEndpointCreator) UpdateConfiguration(reservedSubnets map[string]string) error {
+	var addedSubnets, removedSubnets map[string]string
+	addedSubnets = make(map[string]string)
+	removedSubnets = make(map[string]string)
 	//If the configuration is the same return
 	if reflect.DeepEqual(reservedSubnets, tec.ReservedSubnets) {
 		//klog.Infof("no changes were made at the configuration")
 		return nil
 	}
-	tec.Mutex.Lock()
-	defer tec.Mutex.Unlock()
 	//save the newly added subnets in the configuration
 	for _, values := range reservedSubnets {
 		if _, ok := tec.ReservedSubnets[values]; !ok {
-			if err := tec.IPManager.AcquireReservedSubnet(values); err != nil {
-				return err
-			}
-			klog.Infof("new subnet to be reserved is added to the configuration file: %s", values)
+			addedSubnets[values] = values
+			klog.Infof("New subnet %s to be reserved is added to the configuration file", values)
 		}
 	}
 	//save the removed subnets from the configuration
 	for _, values := range tec.ReservedSubnets {
 		if _, ok := reservedSubnets[values]; !ok {
-			if err := tec.IPManager.FreeReservedSubnet(values); err != nil {
-				klog.Errorf("cannot free network %s", values)
+			removedSubnets[values] = values
+			klog.Infof("Reserved subnet %s is removed from the configuration file", values)
+		}
+	}
+	//here we start to remove subnets from the reserved map
+	tec.Mutex.Lock()
+	defer tec.Mutex.Unlock()
+	if len(removedSubnets) > 0 {
+		for _, subnet := range removedSubnets {
+			//free subnet in ipam
+			if err := tec.IPManager.FreeReservedSubnet(subnet); err != nil {
+				return err
 			}
-			klog.Infof("a reserved subnet is removed from the configuration file: %s", values)
+			//remove the subnet from the reserved ones
+			delete(tec.ReservedSubnets, subnet)
+			klog.Infof("Freeing reserved subnet %s", subnet)
+		}
+	}
+	if len(addedSubnets) > 0 {
+		for _, subnet := range addedSubnets {
+			klog.Infof("New subnet %s has to be reserved", subnet)
+			if err := tec.IPManager.AcquireReservedSubnet(subnet); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

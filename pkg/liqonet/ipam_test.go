@@ -9,11 +9,12 @@ import (
 var _ = Describe("IpamNew", func() {
 	Describe("After reserving a network", func() {
 		var ipam *liqonet.IPAM
-		reserved := []string{
-			"10.244.0.0/24",
+		reserved := map[string]string{
+			"10.244.0.0/24": "10.244.0.0/24",
 		}
+		subnetperCluster := make(map[string]string)
 		ipam = liqonet.NewIPAM()
-		err := ipam.Init(reserved, liqonet.Pools)
+		err := ipam.Init(reserved, liqonet.Pools, subnetperCluster)
 		gomega.Expect(err).To(gomega.BeNil())
 		Context("That belongs to a pool", func() {
 			err := ipam.AcquireReservedSubnet("10.0.2.0/24")
@@ -40,11 +41,12 @@ var _ = Describe("IpamNew", func() {
 		pool := []string{
 			"10.0.0.0/8",
 		}
-		reserved := []string{
-			"192.168.1.0/16",
+		reserved := map[string]string{
+			"192.168.1.0/16": "192.168.1.0/16",
 		}
+		subnetPerCluster := make(map[string]string)
 		ipam = liqonet.NewIPAM()
-		err := ipam.Init(reserved, pool)
+		err := ipam.Init(reserved, pool, subnetPerCluster)
 		gomega.Expect(err).To(gomega.BeNil())
 		Context("When the remote cluster asks for a subnet belonging to a network in the pool", func() {
 			Context("and the subnet has not already been assigned to any other cluster", func() {
@@ -96,11 +98,12 @@ var _ = Describe("IpamNew", func() {
 			pool := []string{
 				"10.0.0.0/8",
 			}
-			reserved := []string{
-				"192.168.1.0/16",
+			reserved := map[string]string{
+				"192.168.1.0/16": "192.168.1.0/16",
 			}
+			subnetPerCluster := make(map[string]string)
 			ipam = liqonet.NewIPAM()
-			err := ipam.Init(reserved, pool)
+			err := ipam.Init(reserved, pool, subnetPerCluster)
 			gomega.Expect(err).To(gomega.BeNil())
 		})
 		It("Should successfully free the subnet", func() {

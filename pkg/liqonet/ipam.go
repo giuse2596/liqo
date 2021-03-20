@@ -10,7 +10,7 @@ import (
 )
 
 type Ipam interface {
-	Init(reservedNetworks, networkPool []string) error
+	Init(reservedNetworks map[string]string, networkPool []string, subnetPerCluster map[string]string) error
 	GetSubnetPerCluster(network, clusterID string) (string, error)
 	FreeSubnetPerCluster(clusterID string) error
 	AcquireReservedSubnet(network string) error
@@ -41,7 +41,7 @@ var Pools = []string{
 }
 
 /* Init receives a set of networks that will be marked as used, and a slice of pools from which it will allocate subnets for remote clusters */
-func (liqoIPAM *IPAM) Init(reservedNetworks, networkPool []string) error {
+func (liqoIPAM *IPAM) Init(reservedNetworks map[string]string, networkPool []string, subnetPerCluster map[string]string) error {
 
 	/* Set network pools */
 	for _, network := range networkPool {
@@ -56,6 +56,8 @@ func (liqoIPAM *IPAM) Init(reservedNetworks, networkPool []string) error {
 			return err
 		}
 	}
+	/* Store networks per cluster */
+	liqoIPAM.SubnetPerCluster = subnetPerCluster
 	return nil
 }
 
