@@ -140,7 +140,7 @@ type LiqonetConfig struct {
 	ReservedSubnets []string `json:"reservedSubnets"`
 	//the subnet used by the cluster for the pods, in CIDR notation
 	//at this moment only /16 subnets are supported
-	// +kubebuilder:validation:Pattern="^([0-9]{1,3}.){3}[0-9]{1,3}(/(16))"
+	// +kubebuilder:validation:Pattern="^([0-9]{1,3}.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))"
 	PodCIDR string `json:"podCIDR"`
 	//the subnet used by the cluster for the services, in CIDR notation
 	// +kubebuilder:validation:Pattern="^([0-9]{1,3}.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))$"

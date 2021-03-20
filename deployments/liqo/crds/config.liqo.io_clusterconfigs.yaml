@@ -242,7 +242,8 @@ spec:
                   podCIDR:
                     description: the subnet used by the cluster for the pods, in CIDR
                       notation at this moment only /16 subnets are supported
-                    pattern: ^([0-9]{1,3}.){3}[0-9]{1,3}(/(16))
+                    pattern:
+                      ^([0-9]{1,3}.){3}[0-9]{1,3}(/(16))
                     type: string
                   reservedSubnets:
                     description: This field is used by the IPAM embedded in the tunnelEndpointCreator.
