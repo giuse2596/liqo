@@ -94,17 +94,17 @@ func (tec *TunnelEndpointCreator) GetClustersSubnets() (map[string]string, error
 	}
 	for _, tunEnd := range tunEndList.Items {
 		if tunEnd.Status.LocalRemappedPodCIDR != "" && tunEnd.Status.LocalRemappedPodCIDR != DefaultPodCIDRValue {
-			subnets[tunEnd.Status.LocalRemappedPodCIDR] = tunEnd.Status.LocalRemappedPodCIDR
+			subnets[tunEnd.Spec.ClusterID] = tunEnd.Status.LocalRemappedPodCIDR
 			klog.Infof("subnet %s already reserved for cluster %s", tunEnd.Status.LocalRemappedPodCIDR, tunEnd.Spec.ClusterID)
 		} else if tunEnd.Status.LocalRemappedPodCIDR == DefaultPodCIDRValue {
-			subnets[tunEnd.Spec.PodCIDR] = tunEnd.Spec.PodCIDR
+			subnets[tunEnd.Spec.ClusterID] = tunEnd.Spec.PodCIDR
 			klog.Infof("subnet %s already reserved for cluster %s", tunEnd.Spec.PodCIDR, tunEnd.Spec.ClusterID)
 		}
 	}
 	return subnets, nil
 }
 
-func (tec *TunnelEndpointCreator) InitConfiguration(reservedSubnets map[string]string, clusterSubnets map[string]string) error {
+func (tec *TunnelEndpointCreator) InitConfiguration(reservedSubnets, clusterSubnets map[string]string) error {
 	//here we acquire the lock of the mutex
 	tec.Mutex.Lock()
 	defer tec.Mutex.Unlock()

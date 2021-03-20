@@ -75,7 +75,7 @@ func (liqoIPAM *IPAM) AcquireReservedSubnet(reservedNetwork string) error {
 			klog.Infof("Network %s has already been reserved", reservedNetwork)
 			return nil
 		}
-		klog.Infof("Network %s has just been reserved.", reservedNetwork)
+		klog.Infof("Network %s has just been reserved", reservedNetwork)
 		return nil
 	}
 	klog.Infof("Network %s is not contained in any pool", reservedNetwork)
